@@ -1,0 +1,34 @@
+# --- Secrets & config ---
+# Never commit real env files — use server.env.example as the template
+*.env
+server.env
+config.conf
+*.conf
+secrets/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# --- Bot runtime state ---
+# These are created at runtime on the server
+.offset
+.pending-reboot
+
+# --- Private dev notes ---
+# CLAUDE.md contains server IPs, SSH paths, and internal context — not for public repos
+CLAUDE.md
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
