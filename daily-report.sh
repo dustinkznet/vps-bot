@@ -75,7 +75,7 @@ cert_line() {
 }
 
 CERT_LINES=""
-for domain in $MONITORED_DOMAINS; do
+for domain in ${MONITORED_DOMAINS:-}; do
     days=$(check_cert_expiry "$domain")
     CERT_LINES+="$(cert_line "$domain" "$days")"$'\n'
 done
@@ -101,7 +101,7 @@ check_form() {
 }
 
 FORM_LINES=""
-for domain in $MONITORED_DOMAINS; do
+for domain in ${MONITORED_DOMAINS:-}; do
     FORM_LINES+="$(check_form "https://${domain}/api/health" "$domain")"$'\n'
 done
 
