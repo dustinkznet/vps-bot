@@ -124,7 +124,7 @@ ${SERVICE_LINES}
 
 🔒 *Security:*
   • SSH failed logins (24h): ${FAILED_SSH}
-  • Fail2ban total bans: ${F2B_BANS}
+  • Fail2ban bans (lifetime): ${F2B_BANS}
 
 🌐 *SSL Certificates:*
 ${CERT_LINES}
