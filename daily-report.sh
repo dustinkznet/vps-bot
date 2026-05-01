@@ -81,7 +81,7 @@ for domain in $MONITORED_DOMAINS; do
 done
 
 # --- SSH failed logins (last 24h) ---
-FAILED_SSH=$(journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep -c "Failed password\|Invalid user" || echo 0)
+FAILED_SSH=$(journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep -c "Failed password\|Invalid user" || true)
 
 # --- Last upgrade ---
 LAST_UPGRADE=$(grep "End-Date" /var/log/apt/history.log 2>/dev/null | tail -1 | awk '{print $2, $3}' || echo "unknown")
