@@ -40,7 +40,7 @@ check_service() {
 }
 # Build service status lines from MONITORED_SERVICES in server.env
 SERVICE_LINES=""
-for svc in $MONITORED_SERVICES; do
+for svc in ${MONITORED_SERVICES:-}; do
     SERVICE_LINES+="  • ${svc}: $(check_service "$svc")"$'\n'
 done
 
