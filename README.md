@@ -2,6 +2,42 @@
 
 A Telegram bot for managing and monitoring a Linux VPS. Get daily health reports, trigger upgrades, check service status, and reboot — all from your phone.
 
+## Example Report
+
+```
+🖥 Daily Server Report
+2026-05-01 07:00 UTC
+
+Uptime: 2 weeks, 1 day, 4 hours
+Load: 0.02, 0.01, 0.00
+
+💾 Disk: 12G used / 80G total (15%)
+🧠 Memory: 312MB used / 1963MB total (1651MB free)
+🔄 Swap: 0MB / 2047MB
+
+⚙️ Services:
+  • nginx: active
+  • postgresql: active
+  • fail2ban: active
+
+🔒 Security:
+  • SSH failed logins (24h): 3
+  • Fail2ban total bans: 847
+
+🌐 SSL Certificates:
+  • mysite.com: ✅ 42d
+  • shop.example.com: ✅ 60d
+  • staging.example.com: ⚠️ 11d
+
+📬 Contact Forms:
+  • mysite.com: ✅
+  • shop.example.com: ✅
+  • staging.example.com: ✅
+
+📦 Updates: 3 package(s) pending
+🕐 Last upgrade: 2026-04-28 09:00:00
+```
+
 ## Features
 
 - **`/report`** — full server health report (disk, memory, load, services, SSL cert expiry, contact form health, pending updates)
