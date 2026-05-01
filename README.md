@@ -169,11 +169,20 @@ The bot needs limited sudo access for a few commands. Create `/etc/sudoers.d/ser
 serverbot ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/sbin/reboot, /usr/bin/fail2ban-client
 ```
 
+## Contact form health checks
+
+The daily report checks `https://<domain>/api/health` for each domain in `MONITORED_DOMAINS`. This endpoint should return HTTP 200 when healthy. If a domain doesn't have this endpoint it will show `❌ (HTTP 404)` in the report — that's expected and not a problem. To skip the check for a domain, simply leave it out of `MONITORED_DOMAINS` and monitor it separately.
+
+## Report schedule
+
+The timer defaults to Mondays at 9AM. To change it, edit the `OnCalendar=` line in `/etc/systemd/system/server-daily-report.timer` and run `sudo systemctl daemon-reload`. See [systemd OnCalendar syntax](https://www.freedesktop.org/software/systemd/man/systemd.time.html) for format examples (e.g. `daily`, `Mon,Wed,Fri *-*-* 08:00:00`).
+
 ## Security notes
 
 - The bot only responds to the `TELEGRAM_CHAT_ID` set in `server.env` — all other senders are silently ignored
 - Tokens and credentials live in `/etc/bots/server.env`, which is root-owned and never committed to git
-- Reboot requires a two-step confirmation with a 60-second expiry
+- Reboot and upgrade both require two-step confirmation with a 60-second expiry
+- Proactive alert state is held in memory — if the bot restarts while a service is down, it will re-alert once on startup
 
 ## Updating
 

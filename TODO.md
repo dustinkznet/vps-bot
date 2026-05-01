@@ -32,6 +32,8 @@
 - [ ] **Docker support** — optional: if Docker is installed, show container status in `/status` and reports.
 
 ### Polish
-- [ ] **Add a LICENSE file** — MIT is the obvious choice for a public tool like this.
-- [ ] **`/api/health` note in README** — clarify that the form health check is optional and what the endpoint should return (200 = healthy). Users without this endpoint will see false negatives.
+- [x] **Add a LICENSE file** — MIT
+- [x] **`/api/health` note in README** — clarified form check is optional, explained 404 behaviour
+- [x] **Report schedule note in README** — explains how to edit the timer
+- [x] **Alert cooldown note in README** — documented the in-memory state caveat
 - [ ] **Test on a fresh Ubuntu server** — verify the README setup steps work end-to-end for someone starting from scratch.
