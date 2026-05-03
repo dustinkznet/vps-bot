@@ -239,9 +239,55 @@ def run_proactive_checks():
     last_check_dt = datetime.utcnow()
 
 
+def fetch_and_send_logs(svc, errors_only=False):
+    """Fetch journalctl output for a service and send it to Telegram."""
+    n_lines = 200 if errors_only else 20
+    result = subprocess.run(
+        ["journalctl", "-u", svc, "-n", str(n_lines), "--no-pager"],
+        capture_output=True, text=True
+    )
+    lines = result.stdout.strip().splitlines()
+    if errors_only:
+        keywords = ("error", "warn", "crit", "fatal")
+        lines = [l for l in lines if any(kw in l.lower() for kw in keywords)]
+        if not lines:
+            send(f"✅ No errors/warnings found in recent `{svc}` logs.")
+            return
+        label = f"Errors: {svc}"
+    else:
+        label = f"Logs: {svc} (last {n_lines} lines)"
+    out = "\n".join(lines) or "No log output."
+    if len(out) > 3500:
+        out = "..." + out[-3500:]
+    send(f"*{label}*\n```\n{out}\n```")
+
+
 def handle_callback(callback_id, data):
-    """Handle inline keyboard button taps (confirm/cancel for reboot and upgrade)."""
+    """Handle inline keyboard button taps (confirm/cancel for reboot/upgrade, log viewing)."""
     answer_callback(callback_id)
+
+    # --- Log service picker: show tail/errors buttons for a chosen service ---
+    if data.startswith("logs_pick:"):
+        svc = data.split(":", 1)[1]
+        send(
+            f"📜 *{svc} logs* — what do you want to see?",
+            reply_markup={
+                "inline_keyboard": [[
+                    {"text": "Last 20 lines",  "callback_data": f"logs_tail:{svc}"},
+                    {"text": "Errors only",    "callback_data": f"logs_errors:{svc}"},
+                ]]
+            },
+        )
+        return
+
+    # --- Log output: tail or errors-only ---
+    if data.startswith("logs_tail:"):
+        fetch_and_send_logs(data.split(":", 1)[1], errors_only=False)
+        return
+
+    if data.startswith("logs_errors:"):
+        fetch_and_send_logs(data.split(":", 1)[1], errors_only=True)
+        return
 
     if data == "confirm_reboot":
         send("🔄 Rebooting now...")
@@ -329,9 +375,13 @@ def handle_message(raw_text):
     if cmd == "/logs":
         if not args:
             send(
-                "Usage: `/logs <service> [lines]`\n"
-                "Example: `/logs nginx 30`\n\n"
-                "Monitored services: " + ", ".join(f"`{s}`" for s in MONITORED_SERVICES)
+                "📜 *Check logs:*",
+                reply_markup={
+                    "inline_keyboard": [[
+                        {"text": svc, "callback_data": f"logs_pick:{svc}"}
+                        for svc in MONITORED_SERVICES
+                    ]]
+                },
             )
             return
         svc = args[0].lower()
@@ -341,19 +391,7 @@ def handle_message(raw_text):
                 "Monitored services: " + ", ".join(f"`{s}`" for s in MONITORED_SERVICES)
             )
             return
-        try:
-            n_lines = min(int(args[1]), 50) if len(args) > 1 else 20
-        except ValueError:
-            n_lines = 20
-        result = subprocess.run(
-            ["journalctl", "-u", svc, "-n", str(n_lines), "--no-pager"],
-            capture_output=True, text=True
-        )
-        out = result.stdout.strip() or "No log output."
-        # Trim to fit Telegram's 4096 char message limit
-        if len(out) > 3500:
-            out = "..." + out[-3500:]
-        send(f"*Logs: {svc} (last {n_lines} lines)*\n```\n{out}\n```")
+        fetch_and_send_logs(svc, errors_only=False)
         return
 
     if cmd == "/reboot":
