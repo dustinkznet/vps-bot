@@ -36,9 +36,7 @@ fi
 PKG_LIST=$(apt list --upgradable 2>/dev/null | grep upgradable | awk -F/ '{print $1}' | head -30 | tr '\n' ' ')
 
 # Run upgrade
-UPGRADE_OUT=$(sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" 2>&1)
+UPGRADE_OUT=$(sudo apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold 2>&1)
 UPGRADE_EXIT=$?
 
 END=$(date '+%Y-%m-%d %H:%M UTC')
