@@ -209,6 +209,34 @@ def run_proactive_checks():
         except Exception as e:
             log(f"SSL check error ({domain}): {e}")
 
+    # --- Service log errors ---
+    # Scan each monitored service for new error/warn lines since last check.
+    # Naturally non-spammy because we only look at the window since last check.
+    LOG_KEYWORDS = ("error", "warn", "crit", "fatal")
+    for svc in MONITORED_SERVICES:
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", svc, "--since", since, "--no-pager", "-q"],
+                capture_output=True, text=True
+            )
+            error_lines = [
+                l for l in result.stdout.splitlines()
+                if any(kw in l.lower() for kw in LOG_KEYWORDS)
+            ]
+            if error_lines:
+                count = len(error_lines)
+                send(
+                    f"⚠️ *{svc}:* {count} new error/warn line(s) — worth a look.",
+                    reply_markup={
+                        "inline_keyboard": [[
+                            {"text": "Last 20 lines", "callback_data": f"logs_tail:{svc}"},
+                            {"text": "Errors only",   "callback_data": f"logs_errors:{svc}"},
+                        ]]
+                    },
+                )
+        except Exception as e:
+            log(f"Log error check ({svc}): {e}")
+
     # --- fail2ban new bans ---
     try:
         result = subprocess.run(
