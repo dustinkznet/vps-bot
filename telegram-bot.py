@@ -2,16 +2,17 @@
 """
 Server management Telegram bot.
 
-Commands:
+Commands (also available as tap buttons):
   /report   → trigger an immediate daily report
-  /upgrade  → run apt upgrade now (asks for confirmation)
-  /reboot   → reboot the server (asks for confirmation)
+  /upgrade  → run apt upgrade now (inline confirm/cancel buttons)
+  /reboot   → reboot the server (inline confirm/cancel buttons)
   /status   → quick service status check
   /logs     → tail recent logs for a service (e.g. /logs nginx 30)
-  /help     → list commands
+  /help     → list commands and show button keyboard
 """
 
 import urllib.request
+import urllib.parse
 import json
 import time
 import subprocess
@@ -22,8 +23,6 @@ from pathlib import Path
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 OFFSET_FILE      = Path("/var/lib/serverbot/.offset")
-PENDING_REBOOT   = Path("/var/lib/serverbot/.pending-reboot")
-PENDING_UPGRADE  = Path("/var/lib/serverbot/.pending-upgrade")
 
 SCRIPTS_DIR        = "/opt/bots/server"
 MONITORED_SERVICES = os.environ.get("MONITORED_SERVICES", "nginx fail2ban").split()
@@ -34,17 +33,43 @@ ALERT_INTERVAL     = int(os.environ.get("ALERT_INTERVAL_MINUTES", "5")) * 60
 # Keys: "disk", "svc:<name>" — True while the alert condition is active.
 alert_state = {}
 
+# Persistent reply keyboard shown at the bottom of the chat.
+# Tapping a button sends its label as a text message.
+MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📊 Report"}, {"text": "⚡ Status"}],
+        [{"text": "📜 Logs"},   {"text": "🔧 Upgrade"}],
+        [{"text": "🔄 Reboot"}, {"text": "❓ Help"}],
+    ],
+    "resize_keyboard": True,
+    "persistent": True,
+}
 
-def send(text):
-    payload = json.dumps({
+# Maps button labels (lowercase) to their equivalent slash commands.
+BUTTON_MAP = {
+    "📊 report":  "/report",
+    "⚡ status":  "/status",
+    "📜 logs":    "/logs",
+    "🔧 upgrade": "/upgrade",
+    "🔄 reboot":  "/reboot",
+    "❓ help":    "/help",
+}
+
+
+def send(text, reply_markup=None):
+    """Send a message, optionally with a reply_markup (keyboard or inline buttons)."""
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown"
-    }).encode()
+        "parse_mode": "Markdown",
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data=payload,
-        headers={"Content-Type": "application/json"}
+        data=data,
+        headers={"Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -53,9 +78,28 @@ def send(text):
         log(f"Telegram send error: {e}")
 
 
+def answer_callback(callback_id, text=""):
+    """Acknowledge a button tap — clears Telegram's loading spinner."""
+    payload = json.dumps({"callback_query_id": callback_id, "text": text}).encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception as e:
+        log(f"answerCallbackQuery error: {e}")
+
+
 def get_updates(offset=0):
-    url = (f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-           f"/getUpdates?timeout=30&offset={offset}&allowed_updates=[\"message\"]")
+    params = urllib.parse.urlencode({
+        "timeout": 30,
+        "offset": offset,
+        "allowed_updates": json.dumps(["message", "callback_query"]),
+    })
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?{params}"
     try:
         with urllib.request.urlopen(url, timeout=35) as r:
             return json.loads(r.read()).get("result", [])
@@ -113,23 +157,54 @@ def run_proactive_checks():
         log(f"Disk check error: {e}")
 
 
+def handle_callback(callback_id, data):
+    """Handle inline keyboard button taps (confirm/cancel for reboot and upgrade)."""
+    answer_callback(callback_id)
+
+    if data == "confirm_reboot":
+        send("🔄 Rebooting now...")
+        time.sleep(1)
+        subprocess.run(["sudo", "reboot"])
+
+    elif data == "cancel_reboot":
+        send("❌ Reboot cancelled.")
+
+    elif data == "confirm_upgrade":
+        send("⏳ Starting upgrade — I'll report back when done...")
+        code, out = run_script(f"{SCRIPTS_DIR}/weekly-upgrade.sh")
+        if code != 0:
+            send(f"❌ Upgrade script error:\n```{out[-400:]}```")
+        # upgrade script sends its own Telegram messages on success
+
+    elif data == "cancel_upgrade":
+        send("❌ Upgrade cancelled.")
+
+
 def handle_message(raw_text):
-    parts = raw_text.strip().split()
+    # Remap button labels to their slash command equivalents
+    normalized = BUTTON_MAP.get(raw_text.strip().lower(), raw_text.strip())
+
+    parts = normalized.split()
     if not parts:
         return
     cmd  = parts[0].lower()
     args = parts[1:]
 
+    # Strip @botname suffix if present (e.g. /start@mybot)
+    if "@" in cmd:
+        cmd = cmd.split("@")[0]
+
     if cmd in ("/start", "/help"):
         send(
             "*Server Management Bot*\n\n"
-            "Commands:\n"
+            "Tap a button or type a command:\n\n"
             "  /report — full health report\n"
             "  /status — quick service check\n"
-            "  /upgrade — run apt upgrade now\n"
+            "  /upgrade — run apt upgrade\n"
             "  /reboot — reboot server\n"
             "  /logs <service> [lines] — tail service logs\n"
-            "  /help — this message"
+            "  /help — this message",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -138,20 +213,19 @@ def handle_message(raw_text):
         code, out = run_script(f"{SCRIPTS_DIR}/daily-report.sh")
         if code != 0:
             send(f"❌ Report failed:\n```{out[-400:]}```")
-        # report sends its own Telegram message on success
+        # report script sends its own Telegram message on success
         return
 
     if cmd == "/upgrade":
-        if PENDING_UPGRADE.exists():
-            PENDING_UPGRADE.unlink()
-            send("⏳ Starting upgrade — I'll report back when done...")
-            code, out = run_script(f"{SCRIPTS_DIR}/weekly-upgrade.sh")
-            if code != 0:
-                send(f"❌ Upgrade script error:\n```{out[-400:]}```")
-            # upgrade sends its own Telegram messages
-        else:
-            PENDING_UPGRADE.touch()
-            send("⚠️ *Are you sure?* Send /upgrade again within 60 seconds to confirm.")
+        send(
+            "⚠️ *Run apt upgrade now?*",
+            reply_markup={
+                "inline_keyboard": [[
+                    {"text": "✅ Confirm", "callback_data": "confirm_upgrade"},
+                    {"text": "❌ Cancel",  "callback_data": "cancel_upgrade"},
+                ]]
+            },
+        )
         return
 
     if cmd == "/status":
@@ -201,17 +275,45 @@ def handle_message(raw_text):
         return
 
     if cmd == "/reboot":
-        if PENDING_REBOOT.exists():
-            PENDING_REBOOT.unlink()
-            send("🔄 Rebooting now...")
-            time.sleep(1)
-            subprocess.run(["sudo", "reboot"])
-        else:
-            PENDING_REBOOT.touch()
-            send("⚠️ *Are you sure?* Send /reboot again within 60 seconds to confirm.")
+        send(
+            "⚠️ *Reboot the server?*",
+            reply_markup={
+                "inline_keyboard": [[
+                    {"text": "✅ Confirm", "callback_data": "confirm_reboot"},
+                    {"text": "❌ Cancel",  "callback_data": "cancel_reboot"},
+                ]]
+            },
+        )
         return
 
     send("Unknown command. Send /help for a list of commands.")
+
+
+def register_commands():
+    """Register slash commands with Telegram so they appear in the / menu."""
+    commands = [
+        {"command": "report",  "description": "Full health report"},
+        {"command": "status",  "description": "Quick service check"},
+        {"command": "logs",    "description": "Tail service logs (e.g. /logs nginx 30)"},
+        {"command": "upgrade", "description": "Run apt upgrade"},
+        {"command": "reboot",  "description": "Reboot the server"},
+        {"command": "help",    "description": "Show commands and button keyboard"},
+    ]
+    payload = json.dumps({"commands": commands}).encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMyCommands",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read())
+            if result.get("ok"):
+                log("Slash commands registered with Telegram.")
+            else:
+                log(f"setMyCommands failed: {result}")
+    except Exception as e:
+        log(f"setMyCommands error: {e}")
 
 
 def log(msg):
@@ -221,38 +323,15 @@ def log(msg):
 def main():
     log(f"Server management bot started (pid={os.getpid()})")
     Path("/var/lib/serverbot").mkdir(parents=True, exist_ok=True)
+    register_commands()
     offset = int(OFFSET_FILE.read_text().strip()) if OFFSET_FILE.exists() else 0
     log(f"Starting at offset {offset}")
 
-    pending_reboot_time  = 0
-    pending_upgrade_time = 0
-    last_check           = 0
+    last_check = 0
 
     while True:
         try:
             now = time.time()
-
-            # Expire pending reboot confirmation after 60s
-            if PENDING_REBOOT.exists():
-                if pending_reboot_time == 0:
-                    pending_reboot_time = now
-                elif now - pending_reboot_time > 60:
-                    PENDING_REBOOT.unlink(missing_ok=True)
-                    pending_reboot_time = 0
-                    send("⏱ Reboot confirmation expired.")
-            else:
-                pending_reboot_time = 0
-
-            # Expire pending upgrade confirmation after 60s
-            if PENDING_UPGRADE.exists():
-                if pending_upgrade_time == 0:
-                    pending_upgrade_time = now
-                elif now - pending_upgrade_time > 60:
-                    PENDING_UPGRADE.unlink(missing_ok=True)
-                    pending_upgrade_time = 0
-                    send("⏱ Upgrade confirmation expired.")
-            else:
-                pending_upgrade_time = 0
 
             # Proactive monitoring — runs every ALERT_INTERVAL seconds
             if now - last_check >= ALERT_INTERVAL:
@@ -267,6 +346,18 @@ def main():
                 offset = update["update_id"] + 1
                 OFFSET_FILE.write_text(str(offset))
 
+                # Handle inline button taps
+                cb = update.get("callback_query")
+                if cb:
+                    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+                    if chat_id != TELEGRAM_CHAT_ID:
+                        log(f"Ignored callback from chat_id={chat_id}")
+                        continue
+                    log(f"Callback: {cb['data']}")
+                    handle_callback(cb["id"], cb["data"])
+                    continue
+
+                # Handle text messages
                 msg     = update.get("message", {})
                 chat_id = str(msg.get("chat", {}).get("id", ""))
                 text    = msg.get("text", "")
