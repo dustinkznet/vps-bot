@@ -9,6 +9,14 @@ Commands (also available as tap buttons):
   /status   → quick service status check
   /logs     → tail recent logs for a service (e.g. /logs nginx 30)
   /help     → list commands and show button keyboard
+
+Proactive alerts (checked every ALERT_INTERVAL_MINUTES):
+  - Service down / recovered
+  - Disk usage above DISK_WARN_PCT
+  - Reboot required after kernel/lib update
+  - SSL cert expiring within SSL_WARN_DAYS days (set MONITORED_DOMAINS)
+  - New fail2ban bans
+  - Successful SSH logins
 """
 
 import urllib.request
@@ -17,6 +25,8 @@ import json
 import time
 import subprocess
 import os
+import ssl
+import socket
 from datetime import datetime
 from pathlib import Path
 
@@ -26,12 +36,17 @@ OFFSET_FILE      = Path("/var/lib/serverbot/.offset")
 
 SCRIPTS_DIR        = "/opt/bots/server"
 MONITORED_SERVICES = os.environ.get("MONITORED_SERVICES", "nginx fail2ban").split()
+MONITORED_DOMAINS  = os.environ.get("MONITORED_DOMAINS", "").split()
 DISK_WARN_PCT      = int(os.environ.get("DISK_WARN_PCT", "80"))
+SSL_WARN_DAYS      = int(os.environ.get("SSL_WARN_DAYS", "30"))
 ALERT_INTERVAL     = int(os.environ.get("ALERT_INTERVAL_MINUTES", "5")) * 60
 
 # Tracks active alert state to avoid repeat notifications.
-# Keys: "disk", "svc:<name>" — True while the alert condition is active.
+# Keys: "disk", "svc:<name>", "ssl:<domain>", "reboot_required" — True while alert is active.
 alert_state = {}
+
+# Tracks when the last proactive check ran, used for journalctl --since queries.
+last_check_dt = None
 
 # Persistent reply keyboard shown at the bottom of the chat.
 # Tapping a button sends its label as a text message.
@@ -124,9 +139,18 @@ def service_status(name):
 
 
 def run_proactive_checks():
-    """Check services and disk; send an alert if a threshold is breached.
-    Tracks state so alerts fire once on onset and resolve once on recovery."""
-    # Service checks
+    """Run all proactive checks and alert on new issues.
+    Alerts fire once on onset and resolve once on recovery."""
+    global last_check_dt
+
+    # For journalctl queries: look back to last check, or one interval on first run
+    if last_check_dt:
+        since = last_check_dt.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        since_ts = datetime.utcnow().timestamp() - ALERT_INTERVAL
+        since = datetime.utcfromtimestamp(since_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- Service checks ---
     for svc in MONITORED_SERVICES:
         status = service_status(svc)
         key = f"svc:{svc}"
@@ -139,7 +163,7 @@ def run_proactive_checks():
                 send(f"✅ *Resolved:* `{svc}` is back online")
             alert_state[key] = False
 
-    # Disk usage check
+    # --- Disk usage check ---
     try:
         disk_pct = int(
             subprocess.run(["df", "/"], capture_output=True, text=True)
@@ -155,6 +179,64 @@ def run_proactive_checks():
             alert_state["disk"] = False
     except Exception as e:
         log(f"Disk check error: {e}")
+
+    # --- Reboot required ---
+    if Path("/var/run/reboot-required").exists():
+        if not alert_state.get("reboot_required"):
+            send("⚠️ *Reboot required* — a kernel or library update is waiting to be applied.")
+            alert_state["reboot_required"] = True
+    else:
+        alert_state["reboot_required"] = False
+
+    # --- SSL cert expiry ---
+    for domain in MONITORED_DOMAINS:
+        try:
+            ctx = ssl.create_default_context()
+            with ctx.wrap_socket(
+                socket.create_connection((domain, 443), timeout=10),
+                server_hostname=domain
+            ) as s:
+                cert = s.getpeercert()
+            expiry = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
+            days_left = (expiry - datetime.utcnow()).days
+            key = f"ssl:{domain}"
+            if days_left <= SSL_WARN_DAYS:
+                if not alert_state.get(key):
+                    send(f"⚠️ *SSL cert expiring in {days_left} days* — `{domain}`")
+                    alert_state[key] = True
+            else:
+                alert_state[key] = False
+        except Exception as e:
+            log(f"SSL check error ({domain}): {e}")
+
+    # --- fail2ban new bans ---
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "fail2ban", "--since", since, "--no-pager", "-q"],
+            capture_output=True, text=True
+        )
+        ban_lines = [l for l in result.stdout.splitlines() if " Ban " in l]
+        if ban_lines:
+            ips = [l.split(" Ban ")[-1].strip() for l in ban_lines]
+            ip_list = "\n".join(f"`{ip}`" for ip in ips[:10])
+            extra = f" _(+{len(ips) - 10} more)_" if len(ips) > 10 else ""
+            send(f"🔒 *fail2ban:* {len(ips)} new ban(s){extra}\n{ip_list}")
+    except Exception as e:
+        log(f"fail2ban check error: {e}")
+
+    # --- Successful SSH logins ---
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "ssh", "--since", since, "--no-pager", "-q"],
+            capture_output=True, text=True
+        )
+        logins = [l for l in result.stdout.splitlines() if "Accepted" in l]
+        for login in logins:
+            send(f"🔑 *SSH login detected*\n`{login}`")
+    except Exception as e:
+        log(f"SSH login check error: {e}")
+
+    last_check_dt = datetime.utcnow()
 
 
 def handle_callback(callback_id, data):
