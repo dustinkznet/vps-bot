@@ -1,0 +1,4 @@
+# serverbot - server management operations
+# Install at /etc/sudoers.d/serverbot with mode 0440 (deploy.sh handles this).
+# Validate with `sudo visudo -c` before reloading sudo — bad syntax can lock out sudo entirely.
+serverbot ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /sbin/reboot, /usr/bin/fail2ban-client

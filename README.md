@@ -48,7 +48,7 @@ Load: 0.02, 0.01, 0.00
 - **`/help`** — command list
 - **Proactive alerts** — background monitoring fires a Telegram message when a service goes down or disk usage exceeds your threshold, and a follow-up when it recovers
 
-The daily report also runs automatically on a systemd timer (default: Mondays at 9AM — edit the timer to change the schedule).
+The daily report runs automatically on a systemd timer (default: every day at 7AM UTC). A weekly full system upgrade also runs automatically (default: Sundays at 3AM UTC).
 
 ## Requirements
 
@@ -83,99 +83,40 @@ Fill in your Telegram bot token, chat ID, and the lists you want monitored:
 - `CERT_WARN_DAYS` — days before SSL expiry to show a warning in reports (default: 14)
 - `ALERT_INTERVAL_MINUTES` — how often the bot checks services and disk in the background (default: 5)
 
-### 3. Deploy the bot files
+### 3. First-time server setup
 
-```bash
-sudo mkdir -p /opt/bots/server
-sudo cp telegram-bot.py daily-report.sh weekly-upgrade.sh /opt/bots/server/
-sudo chmod +x /opt/bots/server/*.sh /opt/bots/server/telegram-bot.py
-```
-
-### 4. Create a dedicated user
+Create the runtime user, install dir, and state dir:
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin serverbot
-sudo chown -R serverbot:serverbot /opt/bots/server
+sudo mkdir -p /opt/bots/server /var/lib/serverbot
+sudo chown -R serverbot:serverbot /opt/bots/server /var/lib/serverbot
 ```
 
-### 5. Set up runtime state directory
+### 4. Deploy
+
+From your local machine:
 
 ```bash
-sudo mkdir -p /var/lib/serverbot
-sudo chown serverbot:serverbot /var/lib/serverbot
+./deploy.sh
 ```
 
-### 6. Create the systemd service
+This copies the bot scripts, the systemd unit files (in `systemd/`), and the sudoers file (in `sudoers/`) into place, validates the sudoers file before installing it, reloads systemd, enables the daily-report and weekly-upgrade timers, and restarts the bot. By default it deploys to host `webserver1` — override with `VPS_BOT_HOST=otherhost ./deploy.sh`.
 
-`/etc/systemd/system/server-bot.service`:
-
-```ini
-[Unit]
-Description=Server Management Telegram Bot
-After=network.target
-
-[Service]
-User=serverbot
-EnvironmentFile=/etc/bots/server.env
-ExecStart=/usr/bin/python3 /opt/bots/server/telegram-bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 7. Create the daily report timer
-
-`/etc/systemd/system/server-daily-report.service`:
-
-```ini
-[Unit]
-Description=Daily Server Report
-
-[Service]
-User=serverbot
-EnvironmentFile=/etc/bots/server.env
-ExecStart=/bin/bash /opt/bots/server/daily-report.sh
-```
-
-`/etc/systemd/system/server-daily-report.timer`:
-
-```ini
-[Unit]
-Description=Run daily server report
-
-[Timer]
-OnCalendar=Mon *-*-* 09:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-### 8. Enable and start
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now server-bot
-sudo systemctl enable --now server-daily-report.timer
-```
-
-## Sudo permissions
-
-The bot needs limited sudo access for a few commands. Create `/etc/sudoers.d/serverbot`:
-
-```
-serverbot ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/sbin/reboot, /usr/bin/fail2ban-client
-```
+The deploy script is the only supported way to push changes — running individual `scp`s by hand is how config and code drift apart.
 
 ## Contact form health checks
 
 The daily report checks `https://<domain>/api/health` for each domain in `MONITORED_DOMAINS`. This endpoint should return HTTP 200 when healthy. If a domain doesn't have this endpoint it will show `❌ (HTTP 404)` in the report — that's expected and not a problem. To skip the check for a domain, simply leave it out of `MONITORED_DOMAINS` and monitor it separately.
 
-## Report schedule
+## Schedules
 
-The timer defaults to Mondays at 9AM. To change it, edit the `OnCalendar=` line in `/etc/systemd/system/server-daily-report.timer` and run `sudo systemctl daemon-reload`. See [systemd OnCalendar syntax](https://www.freedesktop.org/software/systemd/man/systemd.time.html) for format examples (e.g. `daily`, `Mon,Wed,Fri *-*-* 08:00:00`).
+Two systemd timers run automatically:
+
+- **`server-daily-report.timer`** — daily at 7AM UTC. Runs `daily-report.sh` and posts the health summary to Telegram.
+- **`server-weekly-upgrade.timer`** — Sundays at 3AM UTC. Runs `weekly-upgrade.sh` (full `apt upgrade`).
+
+To change a schedule, edit the `OnCalendar=` line in the corresponding timer file under `systemd/`, then `./deploy.sh`. See [systemd OnCalendar syntax](https://www.freedesktop.org/software/systemd/man/systemd.time.html) for format examples.
 
 ## Security notes
 
@@ -186,14 +127,10 @@ The timer defaults to Mondays at 9AM. To change it, edit the `OnCalendar=` line 
 
 ## Updating
 
-Edit files locally, copy to the server, then move them into place and restart:
+Edit files locally, then:
 
 ```bash
-scp daily-report.sh weekly-upgrade.sh telegram-bot.py youruser@yourserver:~/
-ssh youruser@yourserver
-sudo mv ~/telegram-bot.py ~/daily-report.sh ~/weekly-upgrade.sh /opt/bots/server/
-sudo chmod +x /opt/bots/server/*.sh
-sudo systemctl restart server-bot
+./deploy.sh
 ```
 
-The extra step is because `/opt/bots/server/` is owned by the `serverbot` system user.
+That's it. The deploy script handles file ownership, permissions, sudoers validation, and the systemd reload/restart.

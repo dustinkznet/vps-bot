@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily server health report
+After=network.target
+
+[Service]
+Type=oneshot
+User=serverbot
+Group=serverbot
+ExecStart=/bin/bash /opt/bots/server/daily-report.sh
+EnvironmentFile=/etc/bots/server.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=server-daily-report

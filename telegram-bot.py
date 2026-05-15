@@ -189,7 +189,13 @@ def run_proactive_checks():
         alert_state["reboot_required"] = False
 
     # --- SSL cert expiry ---
+    # Two failure modes deserve a Telegram alert (not just a log line):
+    #   1. Cert is valid but expiring within SSL_WARN_DAYS
+    #   2. Cert has already expired (validation throws CERTIFICATE_VERIFY_FAILED)
+    # Without (2), an expired cert would silently log an error forever — the
+    # exact case where the alerting system needs to be loudest.
     for domain in MONITORED_DOMAINS:
+        key = f"ssl:{domain}"
         try:
             ctx = ssl.create_default_context()
             with ctx.wrap_socket(
@@ -199,24 +205,30 @@ def run_proactive_checks():
                 cert = s.getpeercert()
             expiry = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
             days_left = (expiry - datetime.utcnow()).days
-            key = f"ssl:{domain}"
             if days_left <= SSL_WARN_DAYS:
                 if not alert_state.get(key):
                     send(f"⚠️ *SSL cert expiring in {days_left} days* — `{domain}`")
                     alert_state[key] = True
             else:
                 alert_state[key] = False
+        except ssl.SSLCertVerificationError as e:
+            # Most commonly: cert already expired. Alert once, don't spam.
+            if not alert_state.get(key):
+                send(f"🚨 *SSL cert invalid* — `{domain}`\n`{e.reason}`")
+                alert_state[key] = True
         except Exception as e:
             log(f"SSL check error ({domain}): {e}")
 
     # --- Service log errors ---
     # Scan each monitored service for new error/warn lines since last check.
     # Naturally non-spammy because we only look at the window since last check.
+    # --utc is critical: `since` is built from datetime.utcnow(), and without
+    # --utc journalctl interprets the timestamp in the server's local TZ.
     LOG_KEYWORDS = ("error", "warn", "crit", "fatal")
     for svc in MONITORED_SERVICES:
         try:
             result = subprocess.run(
-                ["journalctl", "-u", svc, "--since", since, "--no-pager", "-q"],
+                ["journalctl", "-u", svc, "--since", since, "--utc", "--no-pager", "-q"],
                 capture_output=True, text=True
             )
             error_lines = [
@@ -240,7 +252,7 @@ def run_proactive_checks():
     # --- fail2ban new bans ---
     try:
         result = subprocess.run(
-            ["journalctl", "-u", "fail2ban", "--since", since, "--no-pager", "-q"],
+            ["journalctl", "-u", "fail2ban", "--since", since, "--utc", "--no-pager", "-q"],
             capture_output=True, text=True
         )
         ban_lines = [l for l in result.stdout.splitlines() if " Ban " in l]
@@ -255,7 +267,7 @@ def run_proactive_checks():
     # --- Successful SSH logins ---
     try:
         result = subprocess.run(
-            ["journalctl", "-u", "ssh", "--since", since, "--no-pager", "-q"],
+            ["journalctl", "-u", "ssh", "--since", since, "--utc", "--no-pager", "-q"],
             capture_output=True, text=True
         )
         logins = [l for l in result.stdout.splitlines() if "Accepted" in l]

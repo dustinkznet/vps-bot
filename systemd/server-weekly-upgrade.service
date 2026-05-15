@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly system upgrade
+After=network.target
+
+[Service]
+Type=oneshot
+User=serverbot
+Group=serverbot
+ExecStart=/bin/bash /opt/bots/server/weekly-upgrade.sh
+EnvironmentFile=/etc/bots/server.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=server-weekly-upgrade
